@@ -139,7 +139,6 @@ const EVENTS_Q = `query($code:String!,$f:[Int],$s:Float,$e:Float,$h:HostilityTyp
 
 const TABLE_Q = `query($code:String!,$f:[Int],$s:Float,$e:Float){reportData{report(code:$code){
   d:table(fightIDs:$f,startTime:$s,endTime:$e,dataType:DamageDone)
-  c:table(fightIDs:$f,startTime:$s,endTime:$e,dataType:Casts)
 }}}`;
 
 async function allEvents(code, fightId, s, e, hostility, dataType) {
@@ -195,7 +194,7 @@ export async function getFight(code, fightId) {
   let table = null;
   try {
     const t = await gql(TABLE_Q, { code, f: [f.id], s: f.startTime, e: f.endTime });
-    table = { d: t.reportData.report.d, c: t.reportData.report.c };
+    table = { d: t.reportData.report.d };
   } catch (e) { console.warn('table取得失敗', e.message); }
 
   const raw = {
@@ -336,16 +335,14 @@ async function finalizeFight(raw) {
   };
 }
 
-// ダメージは「与ダメージ」表、Activeは「キャスト」表の値を使う
-// (与ダメージ表のActiveは攻撃した時間しか数えず、ヒーラーの回復などが抜けるため)
+// ダメージとActiveは「与ダメージ」表の値を使う(FFLogsの与ダメージ画面に出るActive%と同じ。
+// ダメージを与えていた時間の割合なので、回復中心の時間が長いヒーラーは低く出る)
 function parseTable(table, fallbackTime) {
   const dmg = table?.d ? (table.d.data || table.d) : (table?.data || table);
-  const cst = table?.c ? (table.c.data || table.c) : null;
-  if (!dmg?.entries && !cst?.entries) return null;
-  const totalTime = dmg?.totalTime || cst?.totalTime || fallbackTime;
+  if (!dmg?.entries) return null;
+  const totalTime = dmg.totalTime || fallbackTime;
   const players = {};
-  for (const e of dmg?.entries || []) players[e.id] = { total: e.total ?? null, active: cst ? null : (e.activeTime ?? null) };
-  for (const e of cst?.entries || []) (players[e.id] ??= { total: null, active: null }).active = e.activeTime ?? null;
+  for (const e of dmg.entries) players[e.id] = { total: e.total ?? null, active: e.activeTime ?? null };
   return { totalTime, players };
 }
 
@@ -357,11 +354,11 @@ export async function getRange(code, fightId, startRel, endRel) {
   if (!f) throw err('戦闘が見つかりません', 404);
   const s = f.startTime + Math.max(0, startRel);
   const e = f.startTime + Math.min(f.duration, endRel);
-  const key = `range-${code}-${fightId}-${Math.round(s)}-${Math.round(e)}`;
+  const key = `range2-${code}-${fightId}-${Math.round(s)}-${Math.round(e)}`;
   const cached = await cacheGet(key);
   if (cached) return cached;
   const d = await gql(TABLE_Q, { code, f: [fightId], s, e });
-  const out = parseTable({ d: d.reportData.report.d, c: d.reportData.report.c }, e - s) || { totalTime: e - s, players: {} };
+  const out = parseTable({ d: d.reportData.report.d }, e - s) || { totalTime: e - s, players: {} };
   out.totalTime = e - s; // 範囲の長さで割る
   await cacheSet(key, out);
   return out;
