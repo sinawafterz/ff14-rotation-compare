@@ -119,8 +119,9 @@ async function importUrls(meText, refText) {
   if (errors.length) toast(errors.join('\n'));
   if (meLog) {
     S.partyKey = meLog.key;
-    S.view = 'focus';
+    // URLで自分(source=)が分かれば個人フォーカスへ。分からなければ8人比較から自分を選んでもらう
     if (meLog.src != null) S.me = { key: meLog.key, pid: meLog.src };
+    S.view = S.me ? 'focus' : 'party';
     // URLにフェーズ(phase=)があれば、範囲をそのフェーズにして、比較相手もそのフェーズの開始で揃える
     const ph = mine.phase != null && meLog.data.phases.find(p => p.id === mine.phase);
     if (ph) setPhaseRange(ph, false);
@@ -271,6 +272,7 @@ function render() {
     b.disabled = b.dataset.view !== 'import' && !S.logs.length;
   });
   const app = $('#app');
+  if (S.view === 'focus' && !(S.me && getLog(S.me.key))) { S.view = 'party'; S.partyKey = S.logs.find(l => l.role === 'me')?.key || S.partyKey; }
   if (S.view === 'import') app.innerHTML = viewImport();
   else if (S.view === 'party') app.innerHTML = viewParty();
   else app.innerHTML = viewFocus();
@@ -400,6 +402,7 @@ function viewParty() {
   return `
     <h2>8人比較</h2>
     <p class="sub">パーティ全員のスキル回しを並べて表示します。目盛り(時間の帯)をドラッグすると範囲を選べ、Activeなどはその範囲で計算し直します。気になる人は「この人にフォーカス」で個人比較へ。</p>
+    ${!S.me ? `<div class="panel warn">自分の行の「この人にフォーカス」を押すと、${S.logs.some(l => l.role !== 'me') ? '比較するログの同じジョブの人と並べて比較します' : '自分のスキル回しを詳しく見られます'}。</div>` : ''}
     ${logTabs(log.key, 'party')}
     ${rangeBar(d.phases, d.fight.duration)}
     ${timeline(rows, log, d.fight.duration)}
@@ -453,11 +456,6 @@ function candidates() {
 }
 
 function viewFocus() {
-  if (!S.me || !getLog(S.me.key)) {
-    const opts = S.logs.filter(l => l.role === 'me' || !S.logs.some(x => x.role === 'me')).map(l => `<optgroup label="${esc(l.data.report.title)} #${l.fightId}">${sortPlayers(l.data.players).map(p => `<option value="${esc(l.key)}|${p.id}">${esc(jobInfo(p.job).ja)} ${esc(p.name)}</option>`).join('')}</optgroup>`).join('');
-    return `<h2>個人フォーカス</h2><div class="panel"><p>自分のログの中で、どれが自分かを選んでください。</p>
-      <div class="row"><select id="mesel">${opts}</select><button class="btn primary" data-act="pickme">決定</button></div></div>`;
-  }
   const meLog = getLog(S.me.key);
   const { all, best, me, mj } = candidates();
   const LV = { 4: ['URLで指定', ''], 3: ['同じジョブ', ''], 2: ['同じロール', 'role'], 1: ['同じ大分類', 'role'], 0: ['', ''] };
@@ -703,8 +701,7 @@ document.addEventListener('click', e => {
       S.view = 'focus';
       render(); break;
     }
-    case 'pickme': { const [key, pid] = $('#mesel').value.split('|'); S.me = { key, pid: Number(pid) }; S.picks = {}; save(); render(); break; }
-    case 'changeme': S.me = null; render(); break;
+    case 'changeme': S.me = null; S.view = 'party'; render(); break;
     case 'phase': {
       const scroll = !b.classList.contains('phase');
       const base = S.view === 'focus' && S.me ? getLog(S.me.key) : getLog(S.partyKey);
@@ -853,7 +850,7 @@ function drawShade(s, e) {
       S.loading = false;
       if (saved.me && getLog(saved.me.key)) S.me = saved.me;
       S.partyKey = S.logs.find(l => l.role === 'me')?.key || S.logs[0]?.key || null;
-      if (S.logs.length) S.view = 'focus';
+      if (S.logs.length) S.view = S.me ? 'focus' : 'party';
     }
   }
   render();
