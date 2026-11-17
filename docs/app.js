@@ -50,7 +50,7 @@ function toast(msg, ok) {
   clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), ok ? 2500 : 6000);
 }
 function save() {
-  try { localStorage.setItem('rotcmp', JSON.stringify({ logs: S.logs.map(l => [l.code, l.fightId]), me: S.me, zoom: S.zoom, showOgcd: S.showOgcd, showBoss: S.showBoss })); } catch {}
+  try { localStorage.setItem('rotcmp', JSON.stringify({ logs: S.logs.map(l => [l.code, l.fightId, l.role, l.src]), me: S.me, inputs: S.inputs, zoom: S.zoom, showOgcd: S.showOgcd, showBoss: S.showBoss })); } catch {}
 }
 
 // ---------- URL解析・読み込み ----------
@@ -60,7 +60,7 @@ function parseLogUrl(s) {
   let code = null;
   const m = s.match(/reports\/(?:a:)?([A-Za-z0-9]+)/);
   if (m) code = m[1];
-  else if (/^demo\d$/i.test(s)) code = s.toLowerCase();
+  else if (/^demo\d/i.test(s)) code = s.slice(0, 5).toLowerCase();
   else if (/^[A-Za-z0-9]{10,}$/.test(s)) code = s;
   if (!code) return null;
   const f = s.match(/[#?&]fight=(\d+|last)/i);
@@ -68,6 +68,7 @@ function parseLogUrl(s) {
   const ph = s.match(/[#?&]phase=(\d+)/i);     // FFLogsで選んでいたフェーズ
   return { code, fight: f ? (f[1].toLowerCase() === 'last' ? 'last' : Number(f[1])) : null, source: src ? Number(src[1]) : null, phase: ph ? Number(ph[1]) : null };
 }
+const parseLines = text => String(text || '').split(/[\s,]+/).map(parseLogUrl).filter(Boolean);
 
 function defaultFight(rep) {
   const boss = rep.fights.filter(f => f.encounterID > 0);
@@ -80,7 +81,8 @@ async function loadReport(code) {
   return S.reports[code];
 }
 
-async function addLog(code, fight) {
+// role: 'me'(自分のログ)| 'ref'(比較するログ)、src: そのログで見る人(URLの source=)
+async function addLog(code, fight, role = 'ref', src = null) {
   const rep = await loadReport(code);
   if (!rep.fights.length) throw new Error('このログには戦闘がありません');
   let fightId = fight === 'last' ? rep.fights.at(-1).id : fight;
@@ -89,37 +91,51 @@ async function addLog(code, fight) {
   let log = S.logs.find(l => l.key === key);
   if (!log) {
     const data = await getFight(code, fightId);
-    log = { key, code, fightId, data };
+    log = { key, code, fightId, data, role, src: null };
     S.logs.push(log);
   }
+  if (role === 'me') log.role = 'me';
+  if (src != null && getPlayer(log, src)) log.src = src;
   return log;
 }
 
-async function importUrls(text) {
-  const lines = text.split(/[\s,]+/).map(parseLogUrl).filter(Boolean);
-  if (!lines.length) { toast('FFLogsのURL(…/reports/XXXX)が見つかりません'); return; }
-  S.loading = true; render();
-  let first = null, firstUrl = null, errors = [];
-  for (const l of lines) {
-    try { const log = await addLog(l.code, l.fight); if (!first) { first = log; firstUrl = l; } }
-    catch (e) { errors.push(`${l.code}: ${e.message}`); }
+// 自分のログと比較するログを読み込み、個人フォーカス(2つのログの比較)を開く
+async function importUrls(meText, refText) {
+  const meL = parseLines(meText), refL = parseLines(refText);
+  if (!meL.length && !refL.length) { toast('FFLogsのURL(…/reports/XXXX)が見つかりません'); return; }
+  const mine = meL[0] || refL.shift();
+  S.inputs = { me: meText, ref: refText };
+  S.loading = true; S.logs = []; S.me = null; S.picks = {}; S.range = null; S.official = {}; S.align = 'pull'; S.alignPhase = null;
+  render();
+  const errors = [];
+  let meLog = null;
+  try { meLog = await addLog(mine.code, mine.fight, 'me', mine.source); }
+  catch (e) { errors.push(`自分のログ: ${e.message}`); }
+  for (const l of refL) {
+    try { await addLog(l.code, l.fight, 'ref', l.source); }
+    catch (e) { errors.push(`比較するログ ${l.code}: ${e.message}`); }
   }
   S.loading = false;
   if (errors.length) toast(errors.join('\n'));
-  if (first) {
-    S.partyKey = first.key;
-    S.view = 'party';
-    // 1件目のURLにプレイヤー(source)があればその人にフォーカス、フェーズ(phase)があれば範囲をそのフェーズに
-    if (firstUrl.source != null && getPlayer(first, firstUrl.source)) {
-      S.me = { key: first.key, pid: firstUrl.source }; S.picks = {}; S.align = 'pull';
-      S.view = 'focus';
-    }
-    const ph = firstUrl.phase != null && first.data.phases.find(p => p.id === firstUrl.phase);
-    if (ph) { S.range = [ph.start, ph.end]; render.scrollTo = Math.max(0, ph.start / 1000 * S.zoom - 20); }
+  if (meLog) {
+    S.partyKey = meLog.key;
+    S.view = 'focus';
+    if (meLog.src != null) S.me = { key: meLog.key, pid: meLog.src };
+    // URLにフェーズ(phase=)があれば、範囲をそのフェーズにして、比較相手もそのフェーズの開始で揃える
+    const ph = mine.phase != null && meLog.data.phases.find(p => p.id === mine.phase);
+    if (ph) setPhaseRange(ph, false);
     save();
-    toast(`${lines.length - errors.length}件読み込みました`, true);
+    toast(`${S.logs.length}件読み込みました`, true);
   }
   render();
+}
+
+// フェーズを範囲にする。比較するログがあるときは、そのフェーズの開始で時間を揃える
+function setPhaseRange(ph, doRender = true) {
+  S.range = [ph.start, ph.end];
+  if (S.logs.some(l => l.role !== 'me' && l.data.phases.some(p => p.id === ph.id))) { S.align = 'phase'; S.alignPhase = ph.id; }
+  render.scrollTo = Math.max(0, ph.start / 1000 * S.zoom - 20);
+  if (doRender) render();
 }
 
 async function changeFight(log, fightId) {
@@ -280,8 +296,10 @@ function viewImport() {
     const rep = S.reports[l.code];
     const f = l.data.fight;
     const opts = (rep?.fights || [f]).map(x => `<option value="${x.id}" ${x.id === l.fightId ? 'selected' : ''}>#${x.id} ${esc(x.name)} ${x.kill ? '★撃破' : x.encounterID ? `ワイプ ${x.fightPercentage != null ? x.fightPercentage.toFixed(1) + '%' : ''}` : ''} (${fmt(x.duration)})</option>`).join('');
+    const who = l.src != null ? getPlayer(l, l.src) : null;
     return `<div class="logcard">
-      <div class="grow"><div class="t">${esc(l.data.report.title)}</div>
+      <span class="pill ${l.role === 'me' ? 'me' : 'ref'}">${l.role === 'me' ? '自分' : '比較'}</span>
+      <div class="grow"><div class="t">${esc(l.data.report.title)}${who ? ` <span class="note">・ ${esc(jobInfo(who.job).ja)} ${esc(who.name)}</span>` : ''}</div>
         <div class="note">${esc(l.code)} ・ ${new Date(l.data.report.startTime + f.startTime).toLocaleString('ja-JP')} ・ ${l.data.players.length}人</div></div>
       <select data-act="fight" data-i="${i}">${opts}</select>
       <span class="pill ${f.kill ? 'kill' : 'wipe'}">${f.kill ? '撃破' : 'ワイプ'} ${fmt(f.duration)}</span>
@@ -291,12 +309,15 @@ function viewImport() {
   }).join('');
   return `
     <h2>ログの取り込み</h2>
-    <p class="sub">FFLogsのレポートURLを貼り付けます。1行に1つ、何件でも。自分のログと比較したい人のログを両方入れると、3の個人フォーカスで並べて比較できます(1件だけでも使えます)。</p>
+    <p class="sub">自分のログと、比べたい人(上手い人など)のログのURLを貼ると、2つのスキル回しを並べて比較します。比べる相手は無くても使えます。</p>
     ${cfg}
     <div class="panel">
-      <textarea id="urls" placeholder="https://ja.fflogs.com/reports/AbCdEf123456#fight=5&#10;https://www.fflogs.com/reports/XyZ987654321?fight=last"></textarea>
+      <div class="fld"><b>自分のログ</b><span class="note">FFLogsで自分を選んだ画面のURL(<code>source=</code> が付く)なら、自分を自動で選びます</span></div>
+      <input type="text" id="url-me" value="${esc(S.inputs?.me || '')}" placeholder="https://ja.fflogs.com/reports/AbCdEf123456?fight=5&amp;source=3">
+      <div class="fld" style="margin-top:12px"><b>比較するログ</b><span class="note">任意。上手い人のログなど。その人を選んだ画面のURLならその人と比べます(なければ同じジョブの人)。複数なら改行</span></div>
+      <textarea id="url-ref" style="min-height:60px" placeholder="https://www.fflogs.com/reports/XyZ987654321?fight=12&amp;source=7">${esc(S.inputs?.ref || '')}</textarea>
       <div class="row" style="margin-top:10px">
-        <button class="btn primary" data-act="import" ${S.loading ? 'disabled' : ''}>${S.loading ? '<span class="spinner"></span> 読み込み中…' : '読み込む'}</button>
+        <button class="btn primary" data-act="import" ${S.loading ? 'disabled' : ''}>${S.loading ? '<span class="spinner"></span> 読み込み中…' : '比較する'}</button>
         <button class="btn" data-act="demo" ${S.loading ? 'disabled' : ''}>デモデータで試す</button>
         <span class="note">URLに <code>fight=番号</code> が無いときは、最後に撃破した戦闘を選びます(後から変更できます)。</span>
       </div>
@@ -317,7 +338,7 @@ function rangeBar(phases, maxDur) {
   const chips = phases.map(p => {
     const on = r && Math.abs(r[0] - p.start) < 50 && Math.abs(r[1] - p.end) < 50;
     const short = p.name.split(':')[0];
-    return `<button class="chip ${p.inter ? 'inter' : ''} ${on ? 'on' : ''}" data-act="phase" data-s="${p.start}" data-e="${p.end}" title="${esc(p.name)} ${fmt(p.start)}〜${fmt(p.end)}">${esc(short)}</button>`;
+    return `<button class="chip ${p.inter ? 'inter' : ''} ${on ? 'on' : ''}" data-act="phase" data-id="${p.id}" data-s="${p.start}" data-e="${p.end}" title="${esc(p.name)} ${fmt(p.start)}〜${fmt(p.end)}">${esc(short)}</button>`;
   }).join('');
   return `<div class="rangebar">
     <span class="lbl">範囲</span>
@@ -397,11 +418,12 @@ function legend() {
     <span><i style="background:rgba(226,100,90,.55)"></i>GCDが1.0秒以上空いた所</span>
     <span><i style="background:#7f8ea3"></i>詠唱時間</span>
     <span>□ ウェポンスキル・魔法(GCD)/ ○ アビリティ</span>
-    <span>目盛りをドラッグで範囲選択、ダブルクリックで解除</span>
+    <span>目盛りをドラッグで範囲選択、端の黄色いつまみをドラッグで調整、ダブルクリックで解除</span>
   </div>`;
 }
 
-// 比較候補: 同じジョブ → いなければ同じロール(近接/遠隔/魔法/タンク/ヒーラー) → それも無ければ同じ大分類
+// 比較候補: 比較するログの中から、URLで選んだ人 → 同じジョブ → 同じロール(近接/遠隔/魔法/タンク/ヒーラー) → 同じ大分類。
+// 比較するログが無いときだけ、同じ戦闘のパーティメンバーから選ぶ
 function candidates() {
   const meLog = getLog(S.me.key);
   const me = getPlayer(meLog, S.me.pid);
@@ -412,9 +434,13 @@ function candidates() {
     const j = jobInfo(p.job);
     // 別のコンテンツ(ボスが違う)の人は自動では比較しない(「ほかのプレイヤー」から手動で追加は可)
     const sameContent = l.data.fight.encounterID === meLog.data.fight.encounterID;
-    const lvl = !sameContent ? 0 : p.job === me.job ? 3 : j.sub === mj.sub ? 2 : j.role === mj.role ? 1 : 0;
-    all.push({ log: l, p, lvl });
+    let lvl = p.job === me.job ? 3 : j.sub === mj.sub ? 2 : j.role === mj.role ? 1 : 0;
+    if (l.key !== S.me.key && l.src === p.id) lvl = 4; // 比較するログのURLで選ばれていた人
+    else if (!sameContent) lvl = 0;
+    all.push({ log: l, p, lvl, team: l.key === S.me.key });
   }
+  const hasRef = all.some(c => !c.team);
+  if (hasRef) for (const c of all) if (c.team) c.lvl = 0; // 比較するログがあるときは、同じパーティの人は自動で選ばない
   const best = Math.max(0, ...all.map(c => c.lvl));
   for (const c of all) {
     const k = c.log.key + '|' + c.p.id;
@@ -428,13 +454,13 @@ function candidates() {
 
 function viewFocus() {
   if (!S.me || !getLog(S.me.key)) {
-    const opts = S.logs.map(l => `<optgroup label="${esc(l.data.report.title)} #${l.fightId}">${sortPlayers(l.data.players).map(p => `<option value="${esc(l.key)}|${p.id}">${esc(jobInfo(p.job).ja)} ${esc(p.name)}</option>`).join('')}</optgroup>`).join('');
-    return `<h2>個人フォーカス</h2><div class="panel"><p>フォーカスする人(自分)を選んでください。</p>
+    const opts = S.logs.filter(l => l.role === 'me' || !S.logs.some(x => x.role === 'me')).map(l => `<optgroup label="${esc(l.data.report.title)} #${l.fightId}">${sortPlayers(l.data.players).map(p => `<option value="${esc(l.key)}|${p.id}">${esc(jobInfo(p.job).ja)} ${esc(p.name)}</option>`).join('')}</optgroup>`).join('');
+    return `<h2>個人フォーカス</h2><div class="panel"><p>自分のログの中で、どれが自分かを選んでください。</p>
       <div class="row"><select id="mesel">${opts}</select><button class="btn primary" data-act="pickme">決定</button></div></div>`;
   }
   const meLog = getLog(S.me.key);
   const { all, best, me, mj } = candidates();
-  const LV = { 3: ['同じジョブ', ''], 2: ['同じロール', 'role'], 1: ['同じ大分類', 'role'], 0: ['', ''] };
+  const LV = { 4: ['URLで指定', ''], 3: ['同じジョブ', ''], 2: ['同じロール', 'role'], 1: ['同じ大分類', 'role'], 0: ['', ''] };
   const candHtml = all.filter(c => best > 0 && c.lvl === best).map(c => `
     <label class="cand ${c.on ? 'on' : ''}"><input type="checkbox" data-act="pick" data-k="${esc(c.k)}" ${c.on ? 'checked' : ''}>
       ${jobBadge(c.p.job)}<div class="who grow"><div>${esc(c.p.name)}</div><div class="meta">${esc(c.log.data.report.title)} #${c.log.fightId}${c.log.key === S.me.key ? '(同じ戦闘)' : ''}</div></div>
@@ -442,9 +468,10 @@ function viewFocus() {
   const others = all.filter(c => !(best > 0 && c.lvl === best));
   const otherHtml = others.length ? `<details style="margin-top:8px"><summary class="note" style="cursor:pointer">ほかのプレイヤーも追加する(${others.length})</summary><div class="cands" style="margin-top:6px">${others.map(c => `
     <label class="cand ${c.on ? 'on' : ''}"><input type="checkbox" data-act="pick" data-k="${esc(c.k)}" ${c.on ? 'checked' : ''}>${jobBadge(c.p.job)}<div class="who grow"><div>${esc(c.p.name)}</div><div class="meta">${esc(c.log.data.report.title)} #${c.log.fightId}</div></div>${c.lvl ? `<span class="match ${LV[c.lvl][1]}">${LV[c.lvl][0]}</span>` : ''}</label>`).join('')}</div></details>` : '';
-  const sameJobMissing = best < 3;
-  const notice = !all.length ? '比較できる相手がいません(1人だけで表示しています)。比較したい人のログを「1 取り込み」で追加してください。'
-    : sameJobMissing ? `読み込んだログに同じジョブ(${esc(mj.ja)})がいないため、${best === 2 ? `同じロール(${SUBROLE[mj.sub] || ''})` : '同じ大分類'}の人を候補にしています。` : '';
+  const hasRef = all.some(c => !c.team);
+  const notice = !hasRef ? '比較するログがありません。上手い人のログなどと比べるには「1 取り込み」の「比較するログ」にURLを入れてください(下は同じパーティの人との比較です)。'
+    : best === 0 ? '比較するログに同じジョブ・同じロールの人がいません。「ほかのプレイヤーも追加する」から選んでください。'
+    : best < 3 ? `比較するログに同じジョブ(${esc(mj.ja)})がいないため、${best === 2 ? `同じロール(${SUBROLE[mj.sub] || ''})` : '同じ大分類'}の人を候補にしています。` : '';
 
   const picked = all.filter(c => c.on);
   const rowsData = [{ log: meLog, p: me, me: true }, ...picked.map(c => ({ log: c.log, p: c.p, me: false }))];
@@ -463,7 +490,7 @@ function viewFocus() {
 
   return `
     <h2>個人フォーカス</h2>
-    <p class="sub">自分と、同じジョブ(いなければ同じロール)の人のスキル回しを並べます。下の表で、範囲内のスキルごとの使用回数の差が分かります。</p>
+    <p class="sub">自分と比較相手(比較するログの同じジョブの人。いなければ同じロール)のスキル回しを並べます。フェーズを選ぶと、そのフェーズの開始で時間を揃えます。下の表で、範囲内のスキルごとの使用回数の差が分かります。</p>
     <div class="panel">
       <div class="row" style="margin-bottom:10px">
         <span>フォーカス: ${jobBadge(me.job)} <b>${esc(me.name)}</b> <span class="note">${esc(meLog.data.report.title)} #${meLog.fightId}</span></span>
@@ -567,7 +594,7 @@ function timeline(rows, bossLog, maxDur) {
     ticks += `<div class="tick ${major ? '' : 'minor'}" style="left:${X(t)}px">${major ? `<span>${fmt(t)}</span>` : ''}</div>`;
     if (major) grid += `<div class="gridline" style="left:${X(t)}px"></div>`;
   }
-  const ph = bossLog.data.phases.map(p => `<div class="phase ${p.inter ? 'inter' : ''}" style="left:${X(p.start)}px;width:${Math.max(4, (p.end - p.start) * z - 2).toFixed(1)}px" data-act="phase" data-s="${p.start}" data-e="${p.end}" title="${esc(p.name)} ${fmt(p.start)}〜${fmt(p.end)}(クリックで範囲に)">${esc(p.name)}</div>`).join('');
+  const ph = bossLog.data.phases.map(p => `<div class="phase ${p.inter ? 'inter' : ''}" style="left:${X(p.start)}px;width:${Math.max(4, (p.end - p.start) * z - 2).toFixed(1)}px" data-act="phase" data-id="${p.id}" data-s="${p.start}" data-e="${p.end}" title="${esc(p.name)} ${fmt(p.start)}〜${fmt(p.end)}(クリックで範囲に)">${esc(p.name)}</div>`).join('');
   parts.push(`<div class="tl-row ruler"><div class="lab">時間 <span class="note">ドラッグで範囲選択</span></div><div class="trk" id="ruler" style="width:${W}px">${ph}${ticks}</div></div>`);
 
   // ボス
@@ -662,9 +689,9 @@ document.addEventListener('click', e => {
   const act = b.dataset.act;
   const i = Number(b.dataset.i);
   switch (act) {
-    case 'import': importUrls($('#urls').value); break;
-    case 'demo': importUrls('demo1\ndemo2'); break;
-    case 'login': login($('#urls')?.value || '').catch(err => toast(err.message)); break;
+    case 'import': importUrls($('#url-me').value, $('#url-ref').value); break;
+    case 'demo': importUrls('demo1#source=8', 'demo2'); break;
+    case 'login': login(JSON.stringify({ me: $('#url-me')?.value || '', ref: $('#url-ref')?.value || '' })).catch(err => toast(err.message)); break;
     case 'logout': logout(); S.auth = authState(); render(); break;
     case 'remove': removeLog(S.logs[i]); break;
     case 'openparty': S.partyKey = S.logs[i].key; S.view = 'party'; render(); break;
@@ -678,7 +705,14 @@ document.addEventListener('click', e => {
     }
     case 'pickme': { const [key, pid] = $('#mesel').value.split('|'); S.me = { key, pid: Number(pid) }; S.picks = {}; save(); render(); break; }
     case 'changeme': S.me = null; render(); break;
-    case 'phase': setRange(Number(b.dataset.s), Number(b.dataset.e), !b.classList.contains('phase')); break;
+    case 'phase': {
+      const scroll = !b.classList.contains('phase');
+      const base = S.view === 'focus' && S.me ? getLog(S.me.key) : getLog(S.partyKey);
+      const ph = base?.data.phases.find(p => p.id === Number(b.dataset.id));
+      if (S.view === 'focus' && ph) { if (!scroll) { const k = render.scrollTo; setPhaseRange(ph, false); render.scrollTo = k; render(); } else setPhaseRange(ph); }
+      else setRange(Number(b.dataset.s), Number(b.dataset.e), scroll);
+      break;
+    }
     case 'clearrange': setRange(null, null); break;
     case 'applyrange': {
       const s = parseTime($('#rs').value) ?? 0;
@@ -732,13 +766,23 @@ document.addEventListener('input', e => {
 
 // 目盛りのドラッグで範囲選択
 let drag = null;
+// 範囲の端(青い線・つまみ)をドラッグすると、その端だけを動かせる
 document.addEventListener('mousedown', e => {
-  const r = e.target.closest('#ruler');
-  if (!r || e.target.closest('.phase') || e.button !== 0) return;
+  if (e.button !== 0) return;
+  const edge = e.target.closest('.redge');
+  const r = edge ? $('#ruler') : e.target.closest('#ruler');
+  if (!r || (!edge && e.target.closest('.phase'))) return;
   const rect = r.getBoundingClientRect();
   const max = Number($('.tl-inner').dataset.max);
   const toT = cx => Math.max(0, Math.min(max, (cx - rect.left) / (S.zoom / 1000)));
-  drag = { t0: toT(e.clientX), toT, moved: false, x0: e.clientX };
+  let anchor = null; // 動かさない側の端
+  if (S.range) {
+    const near = t => Math.abs(e.clientX - (rect.left + t * S.zoom / 1000)) <= 6;
+    if (edge ? edge.id === 'rel' : near(S.range[0])) anchor = S.range[1];
+    else if (edge ? edge.id === 'rer' : near(S.range[1])) anchor = S.range[0];
+  }
+  if (edge && anchor == null) return;
+  drag = { t0: anchor ?? toT(e.clientX), toT, moved: false, x0: e.clientX };
   e.preventDefault();
 });
 document.addEventListener('mousemove', e => {
@@ -799,21 +843,23 @@ function drawShade(s, e) {
     S.zoom = saved.zoom || S.zoom;
     S.showOgcd = saved.showOgcd ?? true;
     S.showBoss = saved.showBoss ?? true;
+    S.inputs = saved.inputs || null;
     if (saved.logs?.length) {
       S.loading = true; render();
-      for (const [code, fight] of saved.logs) {
+      for (const [code, fight, role, src] of saved.logs) {
         if (!code.startsWith('demo') && !S.auth.loggedIn) continue; // ログインしていなければ実際のログは後回し
-        try { await addLog(code, fight); } catch (e) { console.warn(e); }
+        try { await addLog(code, fight, role || 'ref', src ?? null); } catch (e) { console.warn(e); }
       }
       S.loading = false;
       if (saved.me && getLog(saved.me.key)) S.me = saved.me;
-      S.partyKey = S.logs[0]?.key || null;
-      if (S.logs.length) S.view = 'party';
+      S.partyKey = S.logs.find(l => l.role === 'me')?.key || S.logs[0]?.key || null;
+      if (S.logs.length) S.view = 'focus';
     }
   }
   render();
-  if (carry && carry.trim()) {
-    if ($('#urls')) $('#urls').value = carry;
-    await importUrls(carry);
+  if (carry) {
+    let c = null;
+    try { c = JSON.parse(carry); } catch { c = { me: carry, ref: '' }; }
+    if (c && (c.me?.trim() || c.ref?.trim())) await importUrls(c.me || '', c.ref || '');
   }
 })();

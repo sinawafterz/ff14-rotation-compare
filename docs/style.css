@@ -127,7 +127,14 @@ label.chk { display: inline-flex; align-items: center; gap: 4px; font-size: 13px
 .lanebg { position: absolute; left: 0; right: 0; background: var(--gcd-lane); }
 
 .shade { position: absolute; top: 0; bottom: 0; background: var(--shade); pointer-events: none; z-index: 3; }
-.redge { position: absolute; top: 0; bottom: 0; border-left: 2px solid var(--accent); pointer-events: none; z-index: 3; }
+.redge { position: absolute; top: 0; bottom: 0; width: 12px; margin-left: -6px; cursor: ew-resize; z-index: 4;
+  background: linear-gradient(to right, transparent 5px, var(--accent) 5px, var(--accent) 7px, transparent 7px); }
+.redge::before { content: ''; position: absolute; top: 18px; left: 2px; width: 8px; height: 22px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 0 2px rgba(0,0,0,.35); }
+.redge:hover::before { transform: scaleX(1.25); }
+.fld { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
+#url-me { width: 100%; }
+.pill.me { background: rgba(240, 190, 80, .18); color: #f3cd7a; }
+.pill.ref { background: rgba(90, 169, 230, .18); color: #a9d3f5; }
 
 /* 表 */
 table.tbl { border-collapse: collapse; width: auto; min-width: 640px; font-size: 13px; }
