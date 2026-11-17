@@ -415,7 +415,7 @@ function viewParty() {
 function legend() {
   return `<div class="legend">
     <span><i style="background:var(--active)"></i>GCDが回っている時間</span>
-    <span><i style="background:rgba(226,100,90,.55)"></i>GCDが1.0秒以上空いた所</span>
+    <span><i style="background:rgba(226,100,90,.55)"></i>GCDが回っていない所(0.2秒未満の誤差は除く)</span>
     <span><i style="background:#7f8ea3"></i>詠唱時間</span>
     <span>□ ウェポンスキル・魔法(GCD)/ ○ アビリティ</span>
     <span>目盛りをドラッグで範囲選択、端の黄色いつまみをドラッグで調整、ダブルクリックで解除</span>
@@ -640,8 +640,8 @@ function timeline(rows, bossLog, maxDur) {
         if (c.cd) bars += `<div class="castbar ${c.x ? 'cx' : ''}" style="left:${x.toFixed(1)}px;top:${GY + 25}px;width:${(c.cd * z).toFixed(1)}px"></div>`;
         gcdHtml += iconHtml(a, c.a, c.x ? 'cx' : '', `left:${(x).toFixed(1)}px;top:${GY}px`, `data-i="${i}"`);
         if (!c.x) {
-          // GCDの空き(前のGCDの想定終了から1秒以上あいた所)
-          if (lastGcdEnd != null && t - lastGcdEnd >= 1000) bars += `<div class="idle" style="left:${(lastGcdEnd * z).toFixed(1)}px;top:${AY}px;width:${((t - lastGcdEnd) * z).toFixed(1)}px" data-i="${TIPS.push({ kind: 'gap', from: lastGcdEnd, to: t }) - 1}"></div>`;
+          // GCDの空き(前のGCDの想定終了から0.2秒以上あいた所。それより短いのはGCDの長さの推定誤差として扱う)
+          if (lastGcdEnd != null && t - lastGcdEnd >= 200) bars += `<div class="idle" style="left:${(lastGcdEnd * z).toFixed(1)}px;top:${AY}px;width:${((t - lastGcdEnd) * z).toFixed(1)}px" data-i="${TIPS.push({ kind: 'gap', from: lastGcdEnd, to: t }) - 1}"></div>`;
           const rc = a?.recast && a.recast !== 2500 ? a.recast * base / 2500 : base;
           lastGcdEnd = Math.max(lastGcdEnd ?? -1e9, t + Math.max(c.cd || 0, rc));
         }
